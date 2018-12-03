@@ -86,6 +86,7 @@ void openFile(){
   fileOpen = pcap.openFile(SD);
 
   Serial.println("opened: "+filename);
+  lcd.println("opened: "+filename);
 
   //reset counter (counter for saving every X seconds)
   counter = 0;
