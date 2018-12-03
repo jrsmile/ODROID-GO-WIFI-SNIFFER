@@ -1,8 +1,8 @@
 /*
   ===========================================
-       Copyright (c) 2017 Stefan Kremser
+       Copyright (c) 2017 Stefan Kremser - ArduinoPCAP Library
               github.com/spacehuhn
-       Copyright (c) 2018 Jan Reiss
+       Copyright (c) 2018 Jan Reiss - ODROID-GO Port
               github.com/JRSmile
   ===========================================
 */
