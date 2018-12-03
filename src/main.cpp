@@ -25,9 +25,8 @@
 #include "SD.h"
 #include "SPI.h"
 #include <PCAP.h>
-
-#include <Adafruit_GFX.h>    // Core graphics library
-#include <Adafruit_ILI9341.h>
+#include "Config.h"
+#include "Display.h"
 
 //===== SETTINGS =====//
 #define CHANNEL 1
@@ -38,9 +37,24 @@
 #define HOP_INTERVAL 214 //in ms (only necessary if channelHopping is true)
 #define TFT_CS 5  // Chip select control pin LCD
 #define TFT_DC 21  // Data Command control pin LCD
+#define TEXT_HEIGHT 16 // Height of text to be printed and scrolled
+#define BOT_FIXED_AREA 0 // Number of lines in bottom fixed area (lines counted from bottom of screen)
+#define TOP_FIXED_AREA 16 // Number of lines in top fixed area (lines counted from top of screen)
 
 //===== Run-Time variables =====//
-Adafruit_ILI9341 lcd = Adafruit_ILI9341(TFT_CS, TFT_DC);
+// The initial y coordinate of the top of the scrolling area
+uint16_t yStart = TOP_FIXED_AREA;
+// yArea must be a integral multiple of TEXT_HEIGHT
+uint16_t yArea = 320-TOP_FIXED_AREA-BOT_FIXED_AREA;
+// The initial y coordinate of the top of the bottom text line
+uint16_t yDraw = 320 - BOT_FIXED_AREA - TEXT_HEIGHT;
+// Keep track of the drawing x coordinate
+uint16_t xPos = 0;
+// We have to blank the top line each time the display is scrolled, but this takes up to 13 milliseconds
+// for a full width line, meanwhile the serial buffer may be filling... and overflowing
+// We can speed up scrolling of short text lines by just blanking the character we drew
+int blank[19]; // We keep all the strings pixel lengths to optimise the speed of the top line blanking
+
 unsigned long lastTime = 0;
 unsigned long lastChannelChange = 0;
 int counter = 0;
@@ -48,7 +62,7 @@ int ch = CHANNEL;
 bool fileOpen = false;
 
 PCAP pcap = PCAP();
-
+ILI9341 lcd = ILI9341();
 
 //===== FUNCTIONS =====//
 
@@ -69,6 +83,46 @@ void sniffer(void *buf, wifi_promiscuous_pkt_type_t type){
 
 esp_err_t event_handler(void *ctx, system_event_t *event){ return ESP_OK; }
 
+// ##############################################################################################
+// Setup the vertical scrolling start address
+// ##############################################################################################
+void scrollAddress(uint16_t VSP) {
+  lcd.writecommand(ILI9341_VSCRSADD); // Vertical scrolling start address
+  lcd.writedata(VSP>>8);
+  lcd.writedata(VSP);
+}
+
+// ##############################################################################################
+// Call this function to scroll the display one text line
+// ##############################################################################################
+int scroll_line() {
+  int yTemp = yStart; // Store the old yStart, this is where we draw the next line
+  // Use the record of line lengths to optimise the rectangle size we need to erase the top line
+  lcd.fillRect(0,yStart,blank[(yStart-TOP_FIXED_AREA)/TEXT_HEIGHT],TEXT_HEIGHT, ILI9341_BLACK);
+
+  // Change the top of the scroll area
+  yStart+=TEXT_HEIGHT;
+  // The value must wrap around as the screen memory is a circular buffer
+  if (yStart >= 320 - BOT_FIXED_AREA) yStart = TOP_FIXED_AREA + (yStart - 320 + BOT_FIXED_AREA);
+  // Now we can scroll the display
+  scrollAddress(yStart);
+  return  yTemp;
+}
+
+// ##############################################################################################
+// Setup a portion of the screen for vertical scrolling
+// ##############################################################################################
+// We are using a hardware feature of the display, so we can only scroll in portrait orientation
+void setupScrollArea(uint16_t TFA, uint16_t BFA) {
+  lcd.writecommand(ILI9341_VSCRDEF); // Vertical scroll definition
+  lcd.writedata(TFA >> 8);
+  lcd.writedata(TFA);
+  lcd.writedata((320-TFA-BFA)>>8);
+  lcd.writedata(320-TFA-BFA);
+  lcd.writedata(BFA >> 8);
+  lcd.writedata(BFA);
+}
+
 
 /* opens a new file */
 void openFile(){
@@ -85,12 +139,14 @@ void openFile(){
   pcap.filename = filename;
   fileOpen = pcap.openFile(SD);
 
-  Serial.println("opened: "+filename);
-  lcd.println("opened: "+filename);
+  Serial.println("open: "+filename);
+  lcd.println("o:"+filename);
+  scroll_line();
 
   //reset counter (counter for saving every X seconds)
   counter = 0;
 }
+
 
 
 //===== SETUP =====//
@@ -99,16 +155,19 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   Serial.println();
-  
   lcd.begin();
+  lcd.setBrightness(10);
   lcd.fillScreen(ILI9341_BLACK);
-  lcd.setRotation(3);
+  setupScrollArea(TOP_FIXED_AREA, BOT_FIXED_AREA);
+  // lcd.setRotation(3); Rotation of the screen is not possible
   lcd.setTextSize(2);
-  lcd.println("ODROID-GO Wifi Sniffer"); 
+  scroll_line();
+  lcd.println("ODROID Wifi Sniffer"); 
 
-  /* initialize SD card */
+    /* initialize SD card */
   if(!SD.begin()){
     Serial.println("Card Mount Failed");
+    scroll_line();
     lcd.println("Card Mount Failed");
     return;
   }
@@ -117,12 +176,14 @@ void setup() {
   
   if(cardType == CARD_NONE){
       Serial.println("No SD card attached");
+      scroll_line();
       lcd.println("No SD card attached");
       return;
   }
 
-  Serial.print("SD Card Type: ");
-  lcd.print("SD Card Type: ");
+  Serial.print("Card Type: ");
+  scroll_line();
+  lcd.print("Card Type: ");
   if(cardType == CARD_MMC){
       Serial.println("MMC");
       lcd.println("MMC");
@@ -137,9 +198,11 @@ void setup() {
       lcd.println("UNKNOWN");
   }
 
+
   int64_t cardSize = SD.cardSize() / (1024 * 1024);
-  Serial.printf("SD Card Size: %lluMB\n", cardSize);
-  lcd.printf("SD Card Size: %lluMB\n", cardSize);
+  Serial.printf("Card Size: %lluMB\n", cardSize);
+  scroll_line();
+  lcd.printf("Card Size: %lluMB\n", cardSize);
     
   openFile();
 
@@ -158,6 +221,7 @@ void setup() {
   esp_wifi_set_channel(ch,secondCh);
 
   Serial.println("Sniffer started!");
+  scroll_line();
   lcd.println("Sniffer started!");
 }
 
@@ -188,7 +252,8 @@ void loop() {
     Serial.println("==================");
     Serial.println(pcap.filename + " saved!");
     Serial.println("==================");
-    lcd.println(pcap.filename + " saved!");
+    scroll_line();
+    lcd.println("s:" + pcap.filename);
     openFile(); //open new file
   }
 
